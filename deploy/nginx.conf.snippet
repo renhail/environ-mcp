@@ -1,0 +1,166 @@
+# ---------------------------------------------------------------------------
+# environ-mcp 反向代理配置片段
+#
+# 放到 app.environ.online 对应的 nginx server 块里（通常在
+# /etc/nginx/conf.d/*.conf 或 sites-available 中）。
+#
+# 前置条件：Node 服务监听 127.0.0.1:3000
+# ---------------------------------------------------------------------------
+
+# 【必须】OAuth 元数据：必须走根路径 /.well-known/
+#
+# 原因：MCP 规范的客户端（WorkBuddy / CodeBuddy / Claude Desktop / 官方 SDK）
+# 在做授权服务器发现时，第一个候选地址固定是
+#     https://app.environ.online/.well-known/oauth-authorization-server/mcp
+# 如果这个路径被 SPA 的 try_files 规则吃掉并返回 index.html（HTTP 200），
+# 客户端会因为「期望 JSON 却拿到 HTML」而直接解析失败，且**不会**回退到
+# 第二个候选地址。必须把它转给 MCP 容器。
+#
+# 这一段同时覆盖了以下三个用途，一个 location 全包：
+#   /.well-known/oauth-authorization-server      OAuth 授权服务器元数据
+#   /.well-known/oauth-protected-resource        MCP 受保护资源元数据
+#   /.well-known/mcp/server-card.json            目录站静态卡片（SEP-1649）
+#   /.well-known/mcp-registry-auth               Registry 域名验证公钥（可选）
+location /.well-known/ {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location /mcp {
+    proxy_pass http://127.0.0.1:3000/mcp;
+    proxy_http_version 1.1;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # 多用户身份：客户端标识与（可选的）业务 token 必须原样透传
+    proxy_set_header X-Environ-Client  $http_x_environ_client;
+    proxy_set_header X-Environ-Token   $http_x_environ_token;
+
+    # MCP Streamable HTTP 走 SSE 长连接，这三项必须开
+    proxy_buffering off;
+    proxy_cache off;
+    chunked_transfer_encoding off;
+
+    # 长连接超时（工具调用可能等待后端查询）
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+
+# SSE 老协议（兼容只支持 SSE 的平台，如 n8n）
+# 路径：/mcp/sse  ->  /mcp/message
+location /mcp/sse {
+    proxy_pass http://127.0.0.1:3000/mcp/sse;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Environ-Client  $http_x_environ_client;
+    proxy_set_header X-Environ-Token   $http_x_environ_token;
+
+    proxy_buffering off;
+    proxy_cache off;
+    chunked_transfer_encoding off;
+
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+
+# 健康检查（不记访问日志）
+location = /mcp-health {
+    proxy_pass http://127.0.0.1:3000/health;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    access_log off;
+}
+
+# ===========================================================================
+# 【域名验证专用】根域名 server 块
+# ---------------------------------------------------------------------------
+# 官方 MCP Registry 用 com.<域名> 命名空间时，会向
+#     https://<域名>/.well-known/mcp-registry-auth
+# 请求一行公钥来验证域名所有权。
+#
+# 验证端点用的是**根域名**（environ.online），不是 app 子域名，
+# 所以根域名的 server 块里也要有下面这段（app 子域名的那份上面已有）。
+#
+# 两种准备方式，选一种：
+#
+# A) 直接由容器提供（推荐，改公钥只需改环境变量 + 重建容器）：
+#    启动容器时加 -e MCP_REGISTRY_AUTH='v=MCPv1; k=ed25519; p=<公钥>'
+#    然后根域名 server 块加：
+#
+#      location /.well-known/ {
+#          proxy_pass http://127.0.0.1:3000;
+#          proxy_http_version 1.1;
+#          proxy_set_header Host $host;
+#          proxy_set_header X-Real-IP $remote_addr;
+#          proxy_set_header X-Forwarded-Proto $scheme;
+#      }
+#
+# B) 由 nginx 直接返回（不想重建容器时）：
+#
+#      location = /.well-known/mcp-registry-auth {
+#          default_type text/plain;
+#          add_header Cache-Control "no-store";
+#          return 200 "v=MCPv1; k=ed25519; p=<公钥>\n";
+#      }
+#
+# C) 完全不动 nginx —— 用 DNS TXT 验证（官方同样支持，推荐给域名解析在
+#    第三方托管的情况）：
+#    在 DNS 加一条 TXT：environ.online. IN TXT "v=MCPv1; k=ed25519; p=<公钥>"
+# ===========================================================================
+
+# 说明：根域名 server 块通常还要把 SPA 指过去，别把整个 /.well-known/ 都吃掉，
+# 只需要上面 A) 的那个 location 即可。
+
+# ===========================================================================
+# 【备选】Registry 域名验证的反转域名方案
+# ---------------------------------------------------------------------------
+# 当前官方 Registry 的域名处理会把标签顺序反转（environ.online → online.environ），
+# 所以若坚持用域名命名空间，实际生效的授权域是 online.environ，
+# 需要让它可解析并反代到 MCP 容器。
+#
+# 1) DNS 加 A 记录：online.environ  →  <MCP 所在服务器公网 IP>
+#    或者用更明确的子域：mcp.online.environ
+#
+# 2) nginx 加一个 server 块（或在现有 server 块里加 server_name）：
+#
+#      server {
+#          listen 443 ssl;
+#          server_name online.environ mcp.online.environ;
+#
+#          location /.well-known/ {
+#              proxy_pass http://127.0.0.1:3000;
+#              proxy_http_version 1.1;
+#              proxy_set_header Host $host;
+#              proxy_set_header X-Real-IP $remote_addr;
+#              proxy_set_header X-Forwarded-Proto $scheme;
+#          }
+#
+#          location /mcp {
+#              proxy_pass http://127.0.0.1:3000/mcp;
+#              proxy_http_version 1.1;
+#              proxy_set_header Host              $host;
+#              proxy_set_header X-Real-IP         $remote_addr;
+#              proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#              proxy_set_header X-Forwarded-Proto $scheme;
+#              proxy_set_header X-Environ-Client  $http_x_environ_client;
+#              proxy_set_header X-Environ-Token   $http_x_environ_token;
+#              proxy_buffering off;
+#              proxy_cache off;
+#              chunked_transfer_encoding off;
+#              proxy_read_timeout 3600s;
+#              proxy_send_timeout 3600s;
+#          }
+#      }
+#
+# 3) server.json 的 remotes.url 要改成该域名下的地址，
+#    命名空间则是 com.online.environ/environ-mcp
+#
+# ⚠️ 优先用 GitHub 命名空间（io.github.<用户名>/environ-mcp）：
+#    不依赖上面这个反转行为，也不会因为官方日后修复而失效。
+# ===========================================================================

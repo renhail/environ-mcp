@@ -1,0 +1,19 @@
+node_modules/
+.env
+*.log
+
+# IDE 配置
+.idea/
+.vscode/
+
+# MCP Registry 域名验证的 Ed25519 私钥（scripts/registry-publish.sh 生成）
+# 绝不能提交：私钥泄露等于别人可以冒充你的域名发布 MCP
+.registry-key.pem
+*.pem
+
+# 官方发布工具（21MB 二进制，不入库；用 scripts/registry-publish.sh 里的提示下载）
+tools/
+
+# 运行期数据
+data/
+dist/

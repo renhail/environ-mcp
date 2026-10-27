@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "online.environ/environ-mcp",
+  "description": "环境监测站点数据查询：按关键字搜索站点，查询实时/小时监测数据与站点总览。",
+  "version": "1.3.2",
+  "websiteUrl": "https://app.environ.online/mcp/about",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://app.environ.online/mcp"
+    }
+  ],
+  "security": {
+    "bearerToken": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}

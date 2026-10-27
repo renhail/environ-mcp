@@ -1,0 +1,69 @@
+name: environ
+
+services:
+  environ-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: environ-mcp:1.0.0
+    container_name: environ-mcp
+    restart: unless-stopped
+
+    # 只绑本机回环地址，外部流量一律由 nginx 反代（app.environ.online/mcp）。
+    # 若要让外部直接访问，改成 "3000:3000" 并自行评估鉴权强度。
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "3000"
+
+      # environ 后端地址。
+      # 容器内的 localhost 指向容器自身，后端在别处时必须用真实地址：
+      #   - 后端同机 docker  -> http://host.docker.internal:8080
+      #   - 后端同机裸进程    -> http://172.17.0.1:8080
+      #   - 后端在虚拟机/远端 -> https://app.environ.online/api
+      ENVIRON_API_BASE: "${ENVIRON_API_BASE:-https://app.environ.online/api}"
+      ENVIRON_TIMEOUT_MS: "${ENVIRON_TIMEOUT_MS:-20000}"
+
+      # 客户端访问令牌：必填。从 .env 提供，留空则 compose 直接报错退出。
+      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:?请先在 .env 中设置 MCP_AUTH_TOKEN}"
+
+      # 对外 MCP 地址（生成接入配置片段时用）
+      MCP_PUBLIC_URL: "${MCP_PUBLIC_URL:-https://app.environ.online/mcp}"
+
+      # 区分用户的请求头名：每个同事在 mcp.json 里放一个自己的随机串
+      MCP_CLIENT_HEADER: "${MCP_CLIENT_HEADER:-X-Environ-Client}"
+
+      # 绑定表落盘位置（容器重启后不必重新绑定）
+      ENVIRON_BINDINGS_FILE: "${ENVIRON_BINDINGS_FILE:-/data/bindings.json}"
+
+      # OAuth 存储落盘位置
+      ENVIRON_OAUTH_FILE: "${ENVIRON_OAUTH_FILE:-/data/oauth.json}"
+
+      # OAuth 令牌有效期（秒）
+      OAUTH_ACCESS_TTL: "${OAUTH_ACCESS_TTL:-86400}"
+      OAUTH_REFRESH_TTL: "${OAUTH_REFRESH_TTL:-2592000}"
+
+      # 共享默认绑定：多人共用时必须保持关闭（0/false）
+      ALLOW_DEFAULT_BINDING: "${ALLOW_DEFAULT_BINDING:-false}"
+
+    volumes:
+      # 绑定表持久化，容器重启不丢用户绑定
+      - "${ENVIRON_DATA_DIR:-./data}:/data"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true

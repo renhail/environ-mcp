@@ -1,0 +1,31 @@
+[Unit]
+Description=environ-mcp (MCP Server for environ 站点数据查询)
+Documentation=https://github.com/your-org/environ-mcp
+After=network.target
+
+[Service]
+Type=simple
+# 按服务器实际情况调整运行用户
+User=root
+WorkingDirectory=/opt/environ-mcp
+ExecStart=/usr/bin/node /opt/environ-mcp/src/http-server.js
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# 关键环境变量（敏感项建议放 /opt/environ-mcp/.env，用 EnvironmentFile 引入）
+Environment=NODE_ENV=production
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=3000
+# 后端地址：走 nginx 的 /api 前缀（nginx 会去掉 /api 再转发给 Spring Boot）
+Environment=ENVIRON_API_BASE=https://app.environ.online/api
+Environment=ENVIRON_TIMEOUT_MS=20000
+EnvironmentFile=-/opt/environ-mcp/.env
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=environ-mcp
+
+[Install]
+WantedBy=multi-user.target
